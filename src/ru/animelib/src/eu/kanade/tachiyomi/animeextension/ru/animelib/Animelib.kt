@@ -56,37 +56,48 @@ class Animelib :
     override val baseUrl: String
         get() = "https://$domain/ru"
 
-    private val apiSite = "https://hapi.hentaicdn.org"
+    private val apiSite = "https://api.cdnlibs.org"
     private val apiUrl = "$apiSite/api"
 
-    // Some deployments use different cover hosts — include both common ones
-    private val coverDomains = listOf("cover.hentaicdn.org", "cover.imglib.info")
+    private val coverDomains = listOf("cover.imglib.info", "cover.hentaicdn.org")
     private val defaultCoverDomain = coverDomains[0]
 
     private val playlistUtils by lazy { PlaylistUtils(client, headers) }
     private val dateFormatter by lazy { SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH) }
 
     companion object {
+        private const val DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
         private const val PREF_DOMAIN_KEY = "pref_domain"
-        private val PREF_DOMAIN_ENTRIES = arrayOf("animelib.org", "v3.animelib.org", "v4.animelib.org", "v5.animelib.org")
+        private val PREF_DOMAIN_ENTRIES = arrayOf("animelib.org", "v5.animelib.org", "v4.animelib.org", "v3.animelib.org")
         private const val PREF_DOMAIN_DEFAULT = "animelib.org"
 
         private const val PREF_QUALITY_KEY = "pref_quality"
-        private val PREF_QUALITY_ENTRIES = arrayOf("360", "720", "1080", "2160")
+        private val PREF_QUALITY_ENTRIES = arrayOf("2160", "1080", "720", "360")
 
         private const val PREF_USE_MAX_QUALITY_KEY = "pref_use_max_quality"
         private const val PREF_USE_MAX_QUALITY_DEFAULT = true
 
         private const val PREF_SERVER_KEY = "pref_server"
-        private val PREF_SERVER_ENTRIES = arrayOf("Основной", "Резервный 1", "Резервный 2")
+        private const val SERVER_AUTO = "Авто (как на сайте)"
+        private const val SERVER_IMGLIB = "Резервный 2 (video1.imglib.info)"
+        private const val SERVER_CDNLIBS = "Основной (video1.cdnlibs.org)"
+        private const val SERVER_HENTAICDN = "Резервный 1 (video1.hentaicdn.org)"
+        private val PREF_SERVER_ENTRIES = arrayOf(
+            SERVER_AUTO,
+            SERVER_IMGLIB,
+            SERVER_CDNLIBS,
+            SERVER_HENTAICDN,
+        )
 
         private const val PREF_DUB_TEAM_KEY = "prev_dub_team"
 
         private const val PREF_IGNORE_SUBS_KEY = "pref_ignore_subs"
-        private const val PREF_IGNORE_SUBS_DEFAULT = true
+        private const val PREF_IGNORE_SUBS_DEFAULT = false
 
         private const val PREF_USE_KODIK_KEY = "pref_use_kodik"
-        private const val PREF_USE_KODIK_DEFAULT = true
+        private const val PREF_USE_KODIK_DEFAULT = false
 
         private val ATOB_REGEX = Regex("atob\\([^\"]")
     }
@@ -97,26 +108,26 @@ class Animelib :
             val host = request.url.host
             val apiHost = apiSite.toHttpUrl().host
             val builder = request.newBuilder()
-            // Add Referer/Origin for cover and API hosts
-            if (host in coverDomains || host == apiHost) {
+
+            val isVideoHost = host.contains("imglib.info") ||
+                host.contains("cdnlibs.org") ||
+                host.contains("hentaicdn.org")
+
+            if (host in coverDomains || host == apiHost || isVideoHost) {
                 builder.header("Referer", "https://$domain/")
                 builder.header("Origin", "https://$domain")
+                builder.header("User-Agent", DESKTOP_UA)
             }
-            // Additional headers for API requests to bypass simple bot protections
             if (host == apiHost) {
                 builder.header("Accept", "application/json, text/plain, */*")
+                builder.header("Site-Id", "5")
                 builder.header("X-Requested-With", "XMLHttpRequest")
-                builder.header("User-Agent", "Mozilla/5.0 (Android)")
             }
 
-            val requestToProceed = builder.build()
-            val response = chain.proceed(requestToProceed)
-
-            // Log 403 responses for easier debugging
+            val response = chain.proceed(builder.build())
             if (response.code == 403) {
                 android.util.Log.w("Animelib", "HTTP 403 for ${request.url} (host=$host)")
             }
-
             response
         }.build()
 
@@ -139,7 +150,7 @@ class Animelib :
             entries = PREF_SERVER_ENTRIES
             entryValues = PREF_SERVER_ENTRIES
             summary = "%s"
-            setDefaultValue(PREF_SERVER_ENTRIES[0])
+            setDefaultValue(SERVER_AUTO)
         }.also(screen::addPreference)
 
         SwitchPreferenceCompat(screen.context).apply {
@@ -150,19 +161,17 @@ class Animelib :
 
             setOnPreferenceChangeListener { _, newValue ->
                 val value = newValue as Boolean
-
                 val text = if (value) {
                     "Предпочитаемое качество пропадет после закрытия окна настроек"
                 } else {
                     "Откройте настройки заново чтобы выбрать предпочитаемое качество"
                 }
                 Toast.makeText(screen.context, text, Toast.LENGTH_LONG).show()
-
                 preferences.edit().putBoolean(key, value).commit()
             }
         }.also(screen::addPreference)
 
-        if (!preferences.getBoolean(PREF_USE_MAX_QUALITY_KEY, true)) {
+        if (!preferences.getBoolean(PREF_USE_MAX_QUALITY_KEY, PREF_USE_MAX_QUALITY_DEFAULT)) {
             MultiSelectListPreference(screen.context).apply {
                 key = PREF_QUALITY_KEY
                 title = "Предпочитаемое качество"
@@ -176,7 +185,7 @@ class Animelib :
         SwitchPreferenceCompat(screen.context).apply {
             key = PREF_USE_KODIK_KEY
             title = "Включить парсинг видео из плеера Kodik"
-            summary = "Некоторые видео доступны только в нем, но он может работать нестабильно"
+            summary = "Некоторые видео доступны только в нем (до 720p)"
             setDefaultValue(PREF_USE_KODIK_DEFAULT)
         }.also(screen::addPreference)
 
@@ -190,7 +199,7 @@ class Animelib :
         EditTextPreference(screen.context).apply {
             key = PREF_DUB_TEAM_KEY
             title = "Предпочитаемые студии озвучки"
-            summary = "Список студий или ключевых слов через запятую (экспериментальная функция)"
+            summary = "Список студий или ключевых слов через запятую"
             setDefaultValue("")
         }.also(screen::addPreference)
     }
@@ -206,7 +215,6 @@ class Animelib :
         url.addQueryParameter("fields[]", "publisher")
         url.addQueryParameter("fields[]", "otherNames")
         url.addQueryParameter("fields[]", "anime_status_id")
-
         return GET(url.build())
     }
 
@@ -220,13 +228,11 @@ class Animelib :
         url.addPathSegment("anime")
         url.addPathSegment(anime.url)
         url.addPathSegment("similar")
-
         return GET(url.build())
     }
 
     override fun relatedAnimeListParse(response: Response): List<SAnime> {
         val animeList = response.parseAs<AnimeSimilars>()
-
         return animeList.data.map { it.media.toSAnime() }
     }
 
@@ -235,52 +241,61 @@ class Animelib :
         val url = apiUrl.toHttpUrl().newBuilder()
         url.addPathSegment("episodes")
         url.addQueryParameter("anime_id", anime.url)
-
         return GET(url.build())
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val episodeList = response.parseAs<EpisodeList>()
-
         return episodeList.data.map { it.toSEpisode() }.reversed()
     }
 
     // =============================== Video List ===============================
     override fun videoListParse(response: Response): List<Video> = runBlocking {
         val episodeData = response.parseAs<EpisodeVideoData>()
-        val videoServer = fetchPreferredVideoServer()
-        val teams = preferences.getString(PREF_DUB_TEAM_KEY, "")?.split(',')
+        val serverMap = fetchVideoServersMap()
+        val rawTeams = preferences.getString(PREF_DUB_TEAM_KEY, "")
+            ?.split(',')
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            .orEmpty()
 
-        val preferredTeams = episodeData.data.players?.filter { videoInfo ->
-            teams.isNullOrEmpty() || teams.any { videoInfo.team.name.contains(it.trim(), true) }
-        } ?: episodeData.data.players
+        val allPlayers = episodeData.data.players.orEmpty()
+        val preferredTeams = if (rawTeams.isEmpty()) {
+            allPlayers
+        } else {
+            allPlayers.filter { videoInfo ->
+                rawTeams.any { videoInfo.team.name.contains(it, true) }
+            }
+        }
 
         val useMaxQuality = preferences.getBoolean(
             PREF_USE_MAX_QUALITY_KEY,
             PREF_USE_MAX_QUALITY_DEFAULT,
         )
-        val videoInfoList = preferredTeams?.filter { videoInfo ->
+        val videoInfoList = preferredTeams.filter { videoInfo ->
             val quality = bestQuality(videoInfo)
             val noneBetter = preferredTeams.none {
                 bestQuality(it) > quality && it.team.name == videoInfo.team.name
             }
-
             noneBetter || !useMaxQuality
-        } ?: preferredTeams
+        }
 
         val ignoreSubs = preferences.getBoolean(PREF_IGNORE_SUBS_KEY, PREF_IGNORE_SUBS_DEFAULT)
 
-        return@runBlocking videoInfoList?.parallelCatchingFlatMap { videoInfo ->
+        val videos = videoInfoList.parallelCatchingFlatMap { videoInfo ->
             if (ignoreSubs && videoInfo.translationInfo.id == 1) {
                 return@parallelCatchingFlatMap emptyList()
             }
-            val playerName = videoInfo.player.lowercase()
-            when (playerName) {
+            when (videoInfo.player.lowercase()) {
                 "kodik" -> kodikVideoLinks(videoInfo.src, videoInfo.team.name)
-                "animelib" -> animelibVideoLinks(videoInfo, videoServer)
+                "animelib" -> animelibVideoLinks(videoInfo, serverMap)
                 else -> emptyList()
             }
-        } ?: emptyList()
+        }
+
+        return@runBlocking videos.sortedByDescending { video ->
+            Regex("""(\d+)p""").find(video.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        }
     }
 
     override fun videoListRequest(episode: SEpisode): Request {
@@ -306,14 +321,12 @@ class Animelib :
         url.addQueryParameter("site_id[]", "5")
         url.addQueryParameter("links[]", "")
         url.addQueryParameter("sort_by", "last_episode_at")
-
         return GET(url.build())
     }
 
     // =============================== Popular ===============================
     override fun popularAnimeParse(response: Response): AnimesPage {
         val animeList = response.parseAs<AnimeList>()
-
         val hasNext = !animeList.links?.next.isNullOrEmpty()
         val animes = animeList.data.map { it.toSAnime() }
         return AnimesPage(animes.distinctBy { it.url }, hasNext)
@@ -325,7 +338,6 @@ class Animelib :
         url.addQueryParameter("page", page.toString())
         url.addQueryParameter("site_id[]", "5")
         url.addQueryParameter("links[]", "")
-
         return GET(url.build())
     }
 
@@ -334,7 +346,6 @@ class Animelib :
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         val searchParams = AnimelibFilters.getSearchParameters(filters)
-
         val url = apiUrl.toHttpUrl().newBuilder()
         url.addPathSegment("anime")
         url.addQueryParameter("page", page.toString())
@@ -351,39 +362,51 @@ class Animelib :
         if (searchParams.sortDirection.isNotEmpty()) {
             url.addQueryParameter("sort_type", searchParams.sortDirection)
         }
-
         url.addQueryParameter("q", query)
-
         return GET(url.build())
     }
 
     override fun getFilterList() = AnimelibFilters.FILTER_LIST
 
     // =============================== Utils ===============================
-    private suspend fun fetchPreferredVideoServer(): String {
-        val url = apiUrl.toHttpUrl().newBuilder()
-        url.addPathSegment("constants")
-        url.addQueryParameter("fields[]", "videoServers")
-
-        val videoServers = client.newCall(GET(url.build())).awaitSuccess()
-            .parseAs<VideoServerData>()
-
-        val serverPreference = preferences.getString(PREF_SERVER_KEY, PREF_SERVER_ENTRIES[0])
-        val chosen = if (serverPreference.isNullOrEmpty()) {
-            videoServers.data.videoServers[0].url
-        } else {
-            var found: String? = null
-            for (videoServer in videoServers.data.videoServers) {
-                if (videoServer.label == serverPreference) {
-                    found = videoServer.url
-                    break
+    private suspend fun fetchVideoServersMap(): Map<String, String> {
+        val map = mutableMapOf(
+            "main" to "https://video1.cdnlibs.org",
+            "secondary" to "https://video1.hentaicdn.org",
+            "secondary_2" to "https://video1.imglib.info",
+        )
+        try {
+            val url = apiUrl.toHttpUrl().newBuilder()
+                .addPathSegment("constants")
+                .addQueryParameter("fields[]", "videoServers")
+                .build()
+            val videoServers = client.newCall(GET(url)).awaitSuccess().parseAs<VideoServerData>()
+            for (srv in videoServers.data.videoServers) {
+                if (srv.url.isNotBlank()) {
+                    map[srv.id] = srv.url.trimEnd('/')
+                    map[srv.label] = srv.url.trimEnd('/')
                 }
             }
-            found ?: videoServers.data.videoServers[0].url
+        } catch (e: Throwable) {
+            android.util.Log.w("Animelib", "fetchVideoServersMap fallback used: ${e.message}")
         }
+        return map
+    }
 
-        android.util.Log.d("Animelib", "fetchPreferredVideoServer: chosen=$chosen preference=$serverPreference servers=${videoServers.data.videoServers}")
-        return chosen
+    private fun resolveServerUrl(videoDomain: String?, serverMap: Map<String, String>): String {
+        val pref = preferences.getString(PREF_SERVER_KEY, SERVER_AUTO) ?: SERVER_AUTO
+        return when (pref) {
+            SERVER_IMGLIB -> serverMap["secondary_2"] ?: "https://video1.imglib.info"
+            SERVER_CDNLIBS -> serverMap["main"] ?: "https://video1.cdnlibs.org"
+            SERVER_HENTAICDN -> serverMap["secondary"] ?: "https://video1.hentaicdn.org"
+            else -> {
+                if (!videoDomain.isNullOrBlank()) {
+                    serverMap[videoDomain] ?: "https://video1.imglib.info"
+                } else {
+                    serverMap["secondary_2"] ?: "https://video1.imglib.info"
+                }
+            }
+        }
     }
 
     private suspend fun kodikVideoLinks(playerUrl: String?, teamName: String): List<Video> {
@@ -393,11 +416,12 @@ class Animelib :
         }
 
         val kodikPage = UrlUtils.fixUrl(playerUrl) ?: return emptyList()
-        val headers = Headers.Builder()
-        headers.add("Referer", "$baseUrl/")
+        val reqHeaders = Headers.Builder()
+            .add("Referer", "$baseUrl/")
+            .add("User-Agent", DESKTOP_UA)
+            .build()
 
-        // Parse form parameters for video link request
-        val page = client.newCall(GET(kodikPage, headers.build())).awaitSuccess().useAsJsoup()
+        val page = client.newCall(GET(kodikPage, reqHeaders)).awaitSuccess().useAsJsoup()
         val urlParams = page.selectFirst("script:containsData($domain)")?.data()
             ?: return emptyList()
 
@@ -430,14 +454,13 @@ class Animelib :
                 Headers.Builder().apply {
                     set("Referer", "$baseUrl/")
                     set("Origin", "https://$domain")
-                    set("User-Agent", "Mozilla/5.0 (Android)")
+                    set("User-Agent", DESKTOP_UA)
                 }.build(),
             )
             .build()
 
         val kodikData = client.newCall(videoInfoRequest).awaitSuccess().parseAs<KodikData>()
 
-        // Load js with encode algorithm and parse it
         val scriptUrl = page.selectFirst("script[src*=player_single]")?.attr("abs:src")
             ?: return emptyList()
         val jsScript = client.newCall(GET(scriptUrl)).awaitSuccess().bodyString()
@@ -446,7 +469,7 @@ class Animelib :
         var encodeScript = ""
         val deque = ArrayDeque<Char>()
         deque.addFirst('(')
-        for (i in atob.range.last..jsScript.length) {
+        for (i in atob.range.last until jsScript.length) {
             val char = jsScript[i]
             if (char in arrayOf('(', '{')) {
                 deque.addFirst(char)
@@ -455,7 +478,6 @@ class Animelib :
                     deque.removeFirst()
                 }
             }
-
             if (deque.isNotEmpty()) {
                 encodeScript += char
             } else {
@@ -476,17 +498,17 @@ class Animelib :
             listOf("360", "480", "720")
         }
 
-        val videoList = qualityList.flatMap { quality ->
+        return qualityList.flatMap { quality ->
             val quickJs = QuickJs.create()
-            val videoInfo = when (quality) {
-                "360" -> kodikData.links.ugly[0].src
-                "480" -> kodikData.links.bad[0].src
-                "720" -> kodikData.links.good[0].src
-                else -> return@flatMap emptyList()
-            }
+            val vInfo = when (quality) {
+                "360" -> kodikData.links.ugly.firstOrNull()?.src
+                "480" -> kodikData.links.bad.firstOrNull()?.src
+                "720" -> kodikData.links.good.firstOrNull()?.src
+                else -> null
+            } ?: return@flatMap emptyList()
 
             val base64Url = quickJs.use {
-                it.evaluate("t='$videoInfo'; $encodeScript")
+                it.evaluate("t='$vInfo'; $encodeScript")
             }.toString()
 
             val hlsUrl = Base64.decode(base64Url, Base64.DEFAULT).toString(Charsets.UTF_8)
@@ -494,24 +516,25 @@ class Animelib :
 
             playlistUtils.extractFromHls(
                 playlistUrl,
-
                 videoNameGen = { "$teamName (${quality}p Kodik)" },
             )
         }
-
-        return videoList
     }
 
-    private fun animelibVideoLinks(videoInfo: VideoInfo, serverUrl: String): List<Video> {
-        if (videoInfo.video == null) {
-            return emptyList()
-        }
+    private fun animelibVideoLinks(videoInfo: VideoInfo, serverMap: Map<String, String>): List<Video> {
+        val videoMeta = videoInfo.video ?: return emptyList()
+        if (videoMeta.quality.isEmpty()) return emptyList()
 
+        val serverUrl = resolveServerUrl(videoInfo.videoDomain, serverMap)
         val subtitles = videoInfo.subtitles?.map {
-            val url = it.src
-            val lang = "${videoInfo.team.name} (${it.format})"
-            Track(url, lang)
+            Track(it.src, "${videoInfo.team.name} (${it.format})")
         } ?: emptyList()
+
+        val videoHeaders = Headers.Builder()
+            .add("User-Agent", DESKTOP_UA)
+            .add("Referer", "https://$domain/")
+            .add("Origin", "https://$domain")
+            .build()
 
         val useMaxQuality = preferences.getBoolean(
             PREF_USE_MAX_QUALITY_KEY,
@@ -520,29 +543,27 @@ class Animelib :
         val maxQuality = bestQuality(videoInfo)
         val qualityPreference = preferences.getStringSet(PREF_QUALITY_KEY, emptySet())
 
-        val videoList = videoInfo.video.quality.mapNotNull {
-            if (useMaxQuality && it.quality != maxQuality) {
-                return@mapNotNull null
-            } else if (!useMaxQuality && !qualityPreference.isNullOrEmpty()) {
-                if (!qualityPreference.contains(it.quality.toString())) {
+        return videoMeta.quality
+            .sortedByDescending { it.quality }
+            .mapNotNull {
+                if (useMaxQuality && it.quality != maxQuality) {
                     return@mapNotNull null
+                } else if (!useMaxQuality && !qualityPreference.isNullOrEmpty()) {
+                    if (!qualityPreference.contains(it.quality.toString())) {
+                        return@mapNotNull null
+                    }
                 }
+
+                val href = it.href.trim()
+                val url = UrlUtils.fixUrl(href, serverUrl) ?: return@mapNotNull null
+                val quality = "${videoInfo.team.name} (${it.quality}p Animelib)"
+
+                Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitles)
             }
-
-            // Build absolute URL for the video; `href` may be absolute or relative
-            val href = it.href.trim()
-            val url = UrlUtils.fixUrl(href, serverUrl) ?: return@mapNotNull null
-
-            val quality = "${videoInfo.team.name} (${it.quality}p Animelib)"
-
-            Video(url, quality, url, subtitleTracks = subtitles)
-        }
-
-        return videoList
     }
 
     private fun bestQuality(videoInfo: VideoInfo): Int = when (videoInfo.player.lowercase()) {
-        "animelib" -> videoInfo.video?.quality?.maxBy { it.quality }?.quality ?: 0
+        "animelib" -> videoInfo.video?.quality?.maxByOrNull { it.quality }?.quality ?: 0
         "kodik" -> 720
         else -> 0
     }
@@ -550,42 +571,28 @@ class Animelib :
     // =============================== Converters ===============================
     private fun convertStatus(status: Int): Int = when (status) {
         1 -> SAnime.ONGOING
-
         2 -> SAnime.COMPLETED
-
         4 -> SAnime.ON_HIATUS
-
         5 -> SAnime.CANCELLED
-
-        else -> {
-            SAnime.UNKNOWN
-        }
+        else -> SAnime.UNKNOWN
     }
 
-    // Extract plain text from summary which can be either a string or a structured JSON doc
     private fun extractTextFromSummary(element: JsonElement?): String? {
         if (element == null) return null
-
         val sb = StringBuilder()
 
         fun recurse(el: JsonElement) {
             when (el) {
-                is JsonPrimitive -> {
-                    // Append primitive content (string, number, etc.)
-                    sb.append(el.content)
-                }
+                is JsonPrimitive -> sb.append(el.content)
                 is JsonObject -> {
-                    // If node has a 'text' field, append it
                     el["text"]?.let { textEl ->
                         if (textEl is JsonPrimitive) sb.append(textEl.content)
                     }
-                    // Recurse into 'content' arrays or other fields that may contain text
                     el["content"]?.let { recurse(it) }
                 }
                 is JsonArray -> {
                     for (child in el) {
                         recurse(child)
-                        // Separate block nodes with a space
                         sb.append(" ")
                     }
                 }
@@ -593,19 +600,15 @@ class Animelib :
         }
 
         recurse(element)
-
         val result = sb.toString().replace(spaceRegex, " ").trim()
         return result.ifEmpty { null }
     }
 
     private val spaceRegex by lazy { Regex("\\s+") }
 
-    // Normalize cover URL which can be absolute, protocol-relative, or relative path
     private fun normalizeCoverUrl(url: String?): String? {
         if (url.isNullOrBlank()) return null
-        val trimmed = url.trim()
-
-        return UrlUtils.fixUrl(trimmed, "https://$defaultCoverDomain")
+        return UrlUtils.fixUrl(url.trim(), "https://$defaultCoverDomain")
     }
 
     private fun AnimeData.toSAnime() = SAnime.create().apply {
@@ -626,7 +629,8 @@ class Animelib :
 
     private fun EpisodeInfo.toSEpisode() = SEpisode.create().apply {
         setUrlWithoutDomain("api/episodes/$id")
-        name = "Сезон $season Серия $number $episodeName"
+        val epTitle = episodeName?.trim().orEmpty()
+        name = if (epTitle.isNotEmpty()) "Сезон $season Серия $number $epTitle" else "Сезон $season Серия $number"
         episode_number = number.toFloatOrNull() ?: 0f
         date_upload = dateFormatter.tryParse(date)
     }
