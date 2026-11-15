@@ -92,7 +92,7 @@ data class VideoQuality(
 @Serializable
 data class VideoMetaData(
     val id: Int,
-    val quality: List<VideoQuality>,
+    val quality: List<VideoQuality> = emptyList(),
 )
 
 @Serializable
@@ -114,6 +114,7 @@ data class VideoInfo(
     val team: TeamInfo,
 
     @SerialName("translation_type") val translationInfo: TranslationInfo,
+    @SerialName("video_domain") val videoDomain: String? = null,
 
     // Kodik player
     val src: String? = null,
@@ -126,7 +127,7 @@ data class VideoInfo(
 @Serializable
 data class EpisodeInfo(
     val id: Int,
-    @SerialName("name") val episodeName: String,
+    @SerialName("name") val episodeName: String? = null,
     val number: String,
     val season: String,
     @SerialName("created_at") val date: String,
@@ -155,7 +156,7 @@ data class VideoServerInfo(
 
 @Serializable
 data class VideoServers(
-    val videoServers: List<VideoServerInfo>,
+    val videoServers: List<VideoServerInfo> = emptyList(),
 )
 
 @Serializable
