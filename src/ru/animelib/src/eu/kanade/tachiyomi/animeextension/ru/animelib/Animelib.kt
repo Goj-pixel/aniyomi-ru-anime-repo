@@ -282,20 +282,21 @@ class Animelib :
 
         val ignoreSubs = preferences.getBoolean(PREF_IGNORE_SUBS_KEY, PREF_IGNORE_SUBS_DEFAULT)
 
-        val videos = videoInfoList.parallelCatchingFlatMap { videoInfo ->
+        val taggedVideos = videoInfoList.parallelCatchingFlatMap { videoInfo ->
             if (ignoreSubs && videoInfo.translationInfo.id == 1) {
                 return@parallelCatchingFlatMap emptyList()
             }
             when (videoInfo.player.lowercase()) {
                 "kodik" -> kodikVideoLinks(videoInfo.src, videoInfo.team.name)
+                    .map { 720 to it }
                 "animelib" -> animelibVideoLinks(videoInfo, serverMap)
                 else -> emptyList()
             }
         }
 
-        return@runBlocking videos.sortedByDescending { video ->
-            Regex("""(\d+)p""").find(video.quality)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-        }
+        return@runBlocking taggedVideos
+            .sortedByDescending { it.first }
+            .map { it.second }
     }
 
     override fun videoListRequest(episode: SEpisode): Request {
@@ -521,7 +522,7 @@ class Animelib :
         }
     }
 
-    private fun animelibVideoLinks(videoInfo: VideoInfo, serverMap: Map<String, String>): List<Video> {
+    private fun animelibVideoLinks(videoInfo: VideoInfo, serverMap: Map<String, String>): List<Pair<Int, Video>> {
         val videoMeta = videoInfo.video ?: return emptyList()
         if (videoMeta.quality.isEmpty()) return emptyList()
 
@@ -558,7 +559,7 @@ class Animelib :
                 val url = UrlUtils.fixUrl(href, serverUrl) ?: return@mapNotNull null
                 val quality = "${videoInfo.team.name} (${it.quality}p Animelib)"
 
-                Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitles)
+                it.quality to Video(url, quality, url, headers = videoHeaders, subtitleTracks = subtitles)
             }
     }
 
