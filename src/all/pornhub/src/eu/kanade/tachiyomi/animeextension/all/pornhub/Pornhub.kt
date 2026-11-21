@@ -5,8 +5,11 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpLegacySource
 import eu.kanade.tachiyomi.network.GET
+import keiyoushi.utils.AnimeHttpLegacySource
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.Headers
 import okhttp3.Request
 import okhttp3.Response
@@ -19,6 +22,8 @@ class Pornhub(
     override val lang: String,
     override val id: Long,
 ) : AnimeHttpLegacySource() {
+
+    private val headers = headersBuilder().build()
     override val supportsLatest = true
 
     override fun headersBuilder() = Headers.Builder().apply {
@@ -106,7 +111,7 @@ class Pornhub(
     // ================================ Видео ================================
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val page = client.newCall(GET(baseUrl + episode.url, headers)).execute().body.string()
+        val page = network.client.newCall(GET(baseUrl + episode.url, headers)).execute().body.string()
 
         val flash = FLASHVARS_REGEX.find(page)?.groupValues?.get(1)
             ?: throw Exception("Ссылки на видео не найдены")

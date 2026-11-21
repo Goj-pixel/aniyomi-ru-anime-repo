@@ -5,8 +5,8 @@ import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
-import eu.kanade.tachiyomi.animesource.online.AnimeHttpLegacySource
 import eu.kanade.tachiyomi.network.GET
+import keiyoushi.utils.AnimeHttpLegacySource
 import okhttp3.Headers
 import okhttp3.Request
 import okhttp3.Response
@@ -18,6 +18,8 @@ class Rule34Video(
     override val lang: String,
     override val id: Long,
 ) : AnimeHttpLegacySource() {
+
+    private val headers = headersBuilder().build()
     override val supportsLatest = true
 
     override fun headersBuilder() = Headers.Builder().apply {
@@ -83,7 +85,7 @@ class Rule34Video(
     )
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val page = client.newCall(GET(baseUrl + episode.url, headers)).execute().body.string()
+        val page = network.client.newCall(GET(baseUrl + episode.url, headers)).execute().body.string()
 
         val videos = buildList {
             VIDEO_URL_REGEX.find(page)?.groupValues?.get(1)?.let { addVideo(it, "Основной") }
