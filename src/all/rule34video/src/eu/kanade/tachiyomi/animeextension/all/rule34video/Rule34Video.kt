@@ -37,6 +37,8 @@ class Rule34Video(
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request = GET("$baseUrl/search/${query.trim().replace(' ', '+')}/", headers)
 
+    override fun searchAnimeParse(response: Response): AnimesPage = listParse(response)
+
     private fun listParse(response: Response): AnimesPage {
         val document = Jsoup.parse(response.body.string(), baseUrl)
         val animes = document.select("a[href*=\"/video/\"]").mapNotNull { el ->

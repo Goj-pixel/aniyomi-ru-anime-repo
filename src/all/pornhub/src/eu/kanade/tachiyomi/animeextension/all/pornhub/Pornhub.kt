@@ -43,6 +43,8 @@ class Pornhub(
 
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request = GET("$baseUrl/video/search?search=${query.trim().replace(' ', '+')}" + paging(page, "&"), headers)
 
+    override fun searchAnimeParse(response: Response): AnimesPage = listParse(response)
+
     private fun paging(page: Int, sep: String): String = if (page > 1) "${sep}page=$page" else ""
 
     private fun listParse(response: Response): AnimesPage {
