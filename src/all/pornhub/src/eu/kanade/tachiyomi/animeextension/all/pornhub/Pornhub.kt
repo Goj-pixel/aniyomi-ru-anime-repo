@@ -23,7 +23,7 @@ class Pornhub(
     override val id: Long,
 ) : AnimeHttpLegacySource() {
 
-    private val headers = headersBuilder().build()
+    override val headers: Headers = headersBuilder().build()
     override val supportsLatest = true
 
     override fun headersBuilder() = Headers.Builder().apply {

@@ -19,7 +19,7 @@ class Rule34Video(
     override val id: Long,
 ) : AnimeHttpLegacySource() {
 
-    private val headers = headersBuilder().build()
+    override val headers: Headers = headersBuilder().build()
     override val supportsLatest = true
 
     override fun headersBuilder() = Headers.Builder().apply {
@@ -87,23 +87,23 @@ class Rule34Video(
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
         val page = network.client.newCall(GET(baseUrl + episode.url, headers)).execute().body.string()
 
-        val videos = buildList {
-            VIDEO_URL_REGEX.find(page)?.groupValues?.get(1)?.let { addVideo(it, "Основной") }
-            VIDEO_ALT_REGEX.findAll(page).forEach { m ->
-                if (this.none { v -> v.url == m.groupValues[1] }) addVideo(m.groupValues[1], "Альтернативный")
-            }
-        }
+        val main = VIDEO_URL_REGEX.find(page)?.groupValues?.get(1)
+        val alts = VIDEO_ALT_REGEX.findAll(page).map { it.groupValues[1] }.distinct().toList()
+        val videos = (listOfNotNull(main) + alts)
+            .distinct()
+            .map { raw -> videoOf(raw) }
+            .filterNotNull()
         if (videos.isEmpty()) throw Exception("Ссылки на видео не найдены")
         return videos.sortedByDescending { it.videoTitle.filter { ch -> ch.isDigit() }.toIntOrNull() ?: 0 }
     }
 
-    private fun MutableList<Video>.addVideo(raw: String, fallback: String) {
+    private fun videoOf(raw: String): Video? {
         val full = if (raw.startsWith("//")) "https:$raw" else raw
-        if (!full.startsWith("http")) return
+        if (!full.startsWith("http")) return null
         val height = Regex("([0-9]{3,4})[pP]").find(full)?.groupValues?.get(1)
         val container = if (full.contains(".m3u8")) "HLS" else "MP4"
-        val label = if (height != null) "$container ${height}p" else fallback
-        add(Video(full, label, full, headers = headers))
+        val label = if (height != null) "$container ${height}p" else "Видео"
+        return Video(full, label, full, headers = headers)
     }
 
     companion object {
