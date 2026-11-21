@@ -19,7 +19,6 @@ class Rule34Video(
     override val id: Long,
 ) : AnimeHttpLegacySource() {
 
-    override val headers: Headers = headersBuilder().build()
     override val supportsLatest = true
 
     override fun headersBuilder() = Headers.Builder().apply {
