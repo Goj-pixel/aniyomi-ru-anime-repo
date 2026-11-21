@@ -11,7 +11,6 @@ import okhttp3.Headers
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class Pornhub(
@@ -38,8 +37,7 @@ class Pornhub(
 
     override fun latestUpdatesParse(response: Response): AnimesPage = listParse(response)
 
-    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request =
-        GET("$baseUrl/video/search?search=${query.trim().replace(' ', '+')}" + paging(page, "&"), headers)
+    override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request = GET("$baseUrl/video/search?search=${query.trim().replace(' ', '+')}" + paging(page, "&"), headers)
 
     private fun paging(page: Int, sep: String): String = if (page > 1) "${sep}page=$page" else ""
 
