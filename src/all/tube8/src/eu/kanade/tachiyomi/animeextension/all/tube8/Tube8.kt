@@ -14,7 +14,7 @@ class Tube8 :
 
     override val sections = listOf(
         "Популярное" to "/best",
-        "Новое" to "/newest"
+        "Новое" to "/newest",
     )
 
     // Search pages are numbered from zero on the path tail.

@@ -1,0 +1,8 @@
+ext {
+    extName = 'Rule34Video'
+    extClass = '.Rule34Video'
+    extVersionCode = 1
+    isNsfw = true
+}
+
+apply plugin: "kei.plugins.extension.legacy"

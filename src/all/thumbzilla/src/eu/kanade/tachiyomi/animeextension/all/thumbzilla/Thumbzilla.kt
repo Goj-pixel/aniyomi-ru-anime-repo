@@ -14,7 +14,7 @@ class Thumbzilla :
 
     override val sections = listOf(
         "Популярное" to "/best",
-        "Новое" to "/new"
+        "Новое" to "/new",
     )
 
     // Search pages are numbered from zero on the path tail.

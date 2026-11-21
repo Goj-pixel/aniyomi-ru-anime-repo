@@ -2,7 +2,7 @@ ext {
     extName = 'XNXX'
     extClass = '.Xnxx'
     themePkg = 'xvideostheme'
-    overrideVersionCode = 0
+    overrideVersionCode = 1
     isNsfw = true
 }
 
