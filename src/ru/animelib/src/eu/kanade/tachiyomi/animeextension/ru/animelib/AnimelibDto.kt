@@ -78,61 +78,33 @@ data class AnimeSimilar(
 
 // ============================== Episode ==============================
 @Serializable
-data class TeamInfo(
-    val id: Int,
-    val name: String,
-)
-
-@Serializable
-data class VideoQuality(
-    val href: String,
-    val quality: Int,
-)
-
-@Serializable
-data class VideoMetaData(
-    val id: Int,
-    val quality: List<VideoQuality>,
-)
-
-@Serializable
-data class TranslationInfo(
-    val id: Int,
-)
-
-@Serializable
-data class SubtitleInfo(
-    val id: Int,
-    val format: String,
-    val src: String,
-)
-
-@Serializable
 data class VideoInfo(
-    val id: Int,
-    val player: String,
-    val team: TeamInfo,
-
-    @SerialName("translation_type") val translationInfo: TranslationInfo,
-
-    // Kodik player
-    val src: String? = null,
-
-    // Animelib player
-    val video: VideoMetaData? = null,
-    val subtitles: List<SubtitleInfo>? = null,
+    val id: JsonElement? = null,
+    val player: String? = null,
+    val team: JsonElement? = null,
+    @SerialName("team_name") val teamName: String? = null,
+    @SerialName("team_id") val teamId: JsonElement? = null,
+    @SerialName("translation_type") val translationType: JsonElement? = null,
+    val src: JsonElement? = null,
+    val href: JsonElement? = null,
+    val url: JsonElement? = null,
+    val hls: JsonElement? = null,
+    val stream: JsonElement? = null,
+    val video: JsonElement? = null,
+    val subtitles: JsonElement? = null,
 )
 
 @Serializable
 data class EpisodeInfo(
-    val id: Int,
-    @SerialName("name") val episodeName: String,
-    val number: String,
-    val season: String,
-    @SerialName("created_at") val date: String,
-
-    // Optional
-    val players: List<VideoInfo>? = null,
+    val id: Int = 0,
+    @SerialName("anime_id") val animeId: JsonElement? = null,
+    @SerialName("name") val episodeName: String? = null,
+    val number: JsonElement? = null,
+    val season: JsonElement? = null,
+    @SerialName("created_at") val date: String? = null,
+    val players: JsonElement? = null,
+    val teams: JsonElement? = null,
+    val translations: JsonElement? = null,
 )
 
 @Serializable
@@ -155,12 +127,12 @@ data class VideoServerInfo(
 
 @Serializable
 data class VideoServers(
-    val videoServers: List<VideoServerInfo>,
+    val videoServers: List<VideoServerInfo> = emptyList(),
 )
 
 @Serializable
 data class VideoServerData(
-    val data: VideoServers,
+    val data: VideoServers = VideoServers(),
 )
 
 // ============================== Kodik ==============================
