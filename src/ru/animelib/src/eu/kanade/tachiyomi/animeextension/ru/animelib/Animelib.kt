@@ -584,14 +584,34 @@ class Animelib :
     private fun normalizeStreamUrl(raw: String, serverUrl: String): String? {
         val value = raw.trim()
         if (value.isEmpty()) return null
-        if (value.startsWith("http://") || value.startsWith("https://") || value.startsWith("//")) {
-            return UrlUtils.fixUrl(value)
+        val absoluteUrl = when {
+            value.startsWith("http://") || value.startsWith("https://") -> value
+            value.startsWith("//") -> "https:$value"
+            else -> null
         }
-        if (value.startsWith("/")) {
-            val origin = serverUrl.toHttpUrl()
-            return "${origin.scheme}://${origin.host}$value"
+        if (absoluteUrl != null) return absoluteUrl.toHttpUrl().toString()
+
+        val serverBase = serverUrl.toHttpUrl()
+        val origin = serverBase.newBuilder()
+            .encodedPath("/")
+            .query(null)
+            .fragment(null)
+            .build()
+            .toString()
+            .trimEnd('/')
+        val basePath = serverBase.encodedPath.trimEnd('/')
+        val candidatePath = "$origin/${value.trimStart('/')}".toHttpUrl().encodedPath
+        val hrefIncludesBasePath = basePath.isNotEmpty() &&
+            (
+                candidatePath.equals(basePath, ignoreCase = true) ||
+                    candidatePath.startsWith("$basePath/", ignoreCase = true)
+                )
+        val joinedUrl = if (hrefIncludesBasePath) {
+            "$origin/${value.trimStart('/')}"
+        } else {
+            "${serverUrl.trimEnd('/')}/${value.trimStart('/')}"
         }
-        return "${serverUrl.trimEnd('/')}/${value.trimStart('/')}"
+        return joinedUrl.toHttpUrl().toString()
     }
 
     private fun playerHeaders(): Headers = Headers.Builder()
@@ -599,14 +619,15 @@ class Animelib :
         .add("User-Agent", headers["User-Agent"] ?: "Mozilla/5.0 (Android)")
         .build()
 
-    private fun subtitleTracks(videoInfo: VideoInfo): List<Track> {
+    private fun subtitleTracks(videoInfo: VideoInfo, serverUrl: String): List<Track> {
         val subtitleEntries = when (val subtitles = videoInfo.subtitles) {
             is JsonArray -> subtitles.toList()
             is JsonObject -> subtitles.values.toList()
             else -> emptyList()
         }
         return subtitleEntries.mapNotNull { subtitle ->
-            val url = subtitle.findMediaUrl() ?: return@mapNotNull null
+            val rawUrl = subtitle.findMediaUrl() ?: return@mapNotNull null
+            val url = normalizeStreamUrl(rawUrl, serverUrl) ?: return@mapNotNull null
             val format = (subtitle as? JsonObject)?.get("format").asString().orEmpty()
             Track(url, "${videoInfo.teamDisplayName} ($format)")
         }
@@ -729,7 +750,7 @@ class Animelib :
     }
 
     private fun animelibVideoLinks(videoInfo: VideoInfo, serverUrl: String): List<Video> {
-        val subtitles = subtitleTracks(videoInfo)
+        val subtitles = subtitleTracks(videoInfo, serverUrl)
 
         val useMaxQuality = preferences.getBoolean(
             PREF_USE_MAX_QUALITY_KEY,
