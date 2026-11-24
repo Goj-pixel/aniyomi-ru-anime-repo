@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.animeextension.ru.animelib
 
 import android.net.Uri
+import android.text.InputType
 import android.util.Base64
 import android.widget.Toast
 import androidx.preference.EditTextPreference
@@ -32,6 +33,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -58,6 +60,7 @@ class Animelib :
 
     private val apiSite = "https://hapi.hentaicdn.org"
     private val apiUrl = "$apiSite/api"
+    private val defaultVideoServer = "https://video1.cdnlibs.org/.аs/"
 
     // Some deployments use different cover hosts — include both common ones
     private val coverDomains = listOf("cover.hentaicdn.org", "cover.imglib.info")
@@ -82,6 +85,8 @@ class Animelib :
 
         private const val PREF_DUB_TEAM_KEY = "prev_dub_team"
 
+        private const val PREF_AUTH_TOKEN_KEY = "pref_auth_token"
+
         private const val PREF_IGNORE_SUBS_KEY = "pref_ignore_subs"
         private const val PREF_IGNORE_SUBS_DEFAULT = true
 
@@ -104,9 +109,16 @@ class Animelib :
             }
             // Additional headers for API requests to bypass simple bot protections
             if (host == apiHost) {
+                builder.header("Site-Id", "5")
                 builder.header("Accept", "application/json, text/plain, */*")
                 builder.header("X-Requested-With", "XMLHttpRequest")
                 builder.header("User-Agent", "Mozilla/5.0 (Android)")
+                val authorization = authorizationHeader()
+                if (authorization == null) {
+                    builder.removeHeader("Authorization")
+                } else {
+                    builder.header("Authorization", authorization)
+                }
             }
 
             val requestToProceed = builder.build()
@@ -193,6 +205,24 @@ class Animelib :
             summary = "Список студий или ключевых слов через запятую (экспериментальная функция)"
             setDefaultValue("")
         }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_AUTH_TOKEN_KEY
+            title = "Токен авторизации (Bearer)"
+            summary = "Необязательно. Пустое поле отправляет запросы без Authorization."
+            setDefaultValue("")
+            setOnBindEditTextListener {
+                it.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+        }.also(screen::addPreference)
+    }
+
+    private fun authorizationHeader(): String? {
+        val configuredToken = preferences.getString(PREF_AUTH_TOKEN_KEY, "").orEmpty().trim()
+        val token = configuredToken
+            .replaceFirst(Regex("^Bearer(?:\\s+|$)", RegexOption.IGNORE_CASE), "")
+            .trim()
+        return token.takeIf { it.isNotBlank() }?.let { "Bearer $it" }
     }
 
     // =============================== Details ===============================
@@ -246,54 +276,83 @@ class Animelib :
     }
 
     // =============================== Video List ===============================
+    override suspend fun getVideoList(episode: SEpisode): List<Video> {
+        val episodeUri = android.net.Uri.parse(episode.url)
+        val animeId = episodeUri.getQueryParameter("anime_id")
+        val episodeId = episodeUri.lastPathSegment.orEmpty()
+
+        return try {
+            client.newCall(videoListRequest(episode)).awaitSuccess().use(::videoListParse)
+        } catch (e: Exception) {
+            val fallbackPlayers = fetchFallbackEpisode(animeId, episodeId)?.videoInfoList().orEmpty()
+            if (fallbackPlayers.isEmpty()) throw e
+            android.util.Log.w("Animelib", "Primary episode request failed; using anime episode fallback", e)
+            buildVideoList(fallbackPlayers)
+        }
+    }
+
     override fun videoListParse(response: Response): List<Video> = runBlocking {
-        val episodeData = response.parseAs<EpisodeVideoData>()
+        val episodeId = response.request.url.pathSegments.lastOrNull().orEmpty()
+        val animeId = response.request.url.queryParameter("anime_id")
+        val episodeData = try {
+            response.parseAs<EpisodeVideoData>().data
+        } catch (e: Exception) {
+            android.util.Log.w("Animelib", "Could not parse episode players; trying anime episode fallback", e)
+            null
+        }
+        val videoInfoList = episodeData?.videoInfoList()
+            ?.takeIf { it.isNotEmpty() }
+            ?: fetchFallbackEpisode(animeId, episodeId)?.videoInfoList().orEmpty()
+        buildVideoList(videoInfoList)
+    }
+
+    private suspend fun buildVideoList(videoInfoList: List<VideoInfo>): List<Video> {
+        if (videoInfoList.isEmpty()) return emptyList()
         val videoServer = fetchPreferredVideoServer()
         val teams = preferences.getString(PREF_DUB_TEAM_KEY, "")?.split(',')
 
-        val preferredTeams = episodeData.data.players?.filter { videoInfo ->
-            teams.isNullOrEmpty() || teams.any { videoInfo.team.name.contains(it.trim(), true) }
-        } ?: episodeData.data.players
+        val preferredTeams = videoInfoList.filter { videoInfo ->
+            teams.isNullOrEmpty() || teams.any { videoInfo.teamDisplayName.contains(it.trim(), true) }
+        }
 
         val useMaxQuality = preferences.getBoolean(
             PREF_USE_MAX_QUALITY_KEY,
             PREF_USE_MAX_QUALITY_DEFAULT,
         )
-        val videoInfoList = preferredTeams?.filter { videoInfo ->
+        val bestTeamVideos = preferredTeams.filter { videoInfo ->
             val quality = bestQuality(videoInfo)
             val noneBetter = preferredTeams.none {
-                bestQuality(it) > quality && it.team.name == videoInfo.team.name
+                bestQuality(it) > quality && it.teamDisplayName == videoInfo.teamDisplayName
             }
 
             noneBetter || !useMaxQuality
-        } ?: preferredTeams
+        }
 
         val ignoreSubs = preferences.getBoolean(PREF_IGNORE_SUBS_KEY, PREF_IGNORE_SUBS_DEFAULT)
+        val hasDubbedPlayers = bestTeamVideos.any { it.translationTypeId != 1 }
 
-        return@runBlocking videoInfoList?.parallelCatchingFlatMap { videoInfo ->
-            if (ignoreSubs && videoInfo.translationInfo.id == 1) {
+        return bestTeamVideos.parallelCatchingFlatMap { videoInfo ->
+            if (ignoreSubs && hasDubbedPlayers && videoInfo.translationTypeId == 1) {
                 return@parallelCatchingFlatMap emptyList()
             }
-            val playerName = videoInfo.player.lowercase()
+            val playerName = videoInfo.player.orEmpty().lowercase()
             when (playerName) {
-                "kodik" -> kodikVideoLinks(videoInfo.src, videoInfo.team.name)
+                "kodik" -> kodikVideoLinks(videoInfo.src?.asString(), videoInfo.teamDisplayName)
                 "animelib" -> animelibVideoLinks(videoInfo, videoServer)
                 else -> emptyList()
             }
-        } ?: emptyList()
+        }
     }
 
     override fun videoListRequest(episode: SEpisode): Request {
-        val path = if (episode.url.startsWith("http")) {
-            episode.url.toHttpUrl().encodedPath
-        } else {
-            episode.url
+        val parsed = android.net.Uri.parse(episode.url)
+        val path = parsed.path.orEmpty().removePrefix("/")
+        val requestUrl = apiSite.toHttpUrl().newBuilder()
+            .addPathSegments(path)
+        parsed.getQueryParameter("anime_id")?.let {
+            requestUrl.addQueryParameter("anime_id", it)
         }
-        return GET(
-            apiSite.toHttpUrl().newBuilder()
-                .addPathSegments(path.removePrefix("/"))
-                .build(),
-        )
+        return GET(requestUrl.build())
     }
 
     // =============================== Latest ===============================
@@ -365,25 +424,192 @@ class Animelib :
         url.addPathSegment("constants")
         url.addQueryParameter("fields[]", "videoServers")
 
-        val videoServers = client.newCall(GET(url.build())).awaitSuccess()
-            .parseAs<VideoServerData>()
-
         val serverPreference = preferences.getString(PREF_SERVER_KEY, PREF_SERVER_ENTRIES[0])
-        val chosen = if (serverPreference.isNullOrEmpty()) {
-            videoServers.data.videoServers[0].url
-        } else {
-            var found: String? = null
-            for (videoServer in videoServers.data.videoServers) {
-                if (videoServer.label == serverPreference) {
-                    found = videoServer.url
-                    break
-                }
+        return try {
+            val videoServers = client.newCall(GET(url.build())).awaitSuccess()
+                .parseAs<VideoServerData>().data.videoServers
+            val chosen = videoServers.firstOrNull { it.label == serverPreference }?.url
+                ?: videoServers.firstOrNull()?.url
+                ?: fallbackVideoServer(serverPreference)
+            android.util.Log.d("Animelib", "fetchPreferredVideoServer: chosen=$chosen preference=$serverPreference")
+            chosen
+        } catch (e: Exception) {
+            android.util.Log.w("Animelib", "Could not load video servers; using the configured CDN fallback", e)
+            fallbackVideoServer(serverPreference)
+        }
+    }
+
+    private fun fallbackVideoServer(serverPreference: String?): String = when (serverPreference) {
+        PREF_SERVER_ENTRIES[1] -> "https://video2.cdnlibs.org/"
+        PREF_SERVER_ENTRIES[2] -> "https://video1.imglib.info/"
+        else -> defaultVideoServer
+    }
+
+    private suspend fun fetchFallbackEpisode(animeId: String?, episodeId: String): EpisodeInfo? {
+        if (animeId.isNullOrBlank() || episodeId.isBlank()) return null
+
+        val requestUrl = apiUrl.toHttpUrl().newBuilder()
+            .addPathSegment("anime")
+            .addPathSegment(animeId)
+            .addPathSegment("episodes")
+            .addQueryParameter("site_id", "5")
+            .build()
+
+        return try {
+            val payload = client.newCall(GET(requestUrl)).awaitSuccess().parseAs<JsonElement>()
+            val episodes = when (val data = (payload as? JsonObject)?.get("data")) {
+                is JsonArray -> data
+                is JsonObject -> JsonArray(listOf(data))
+                else -> JsonArray(emptyList())
             }
-            found ?: videoServers.data.videoServers[0].url
+            episodes.firstNotNullOfOrNull { item ->
+                val itemId = (item as? JsonObject)?.get("id").asString()
+                if (itemId == episodeId) item.parseAs<EpisodeInfo>() else null
+            }?.also {
+                android.util.Log.d("Animelib", "Loaded episode players from anime fallback endpoint")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("Animelib", "Anime episode fallback unavailable for anime $animeId", e)
+            null
+        }
+    }
+
+    private fun EpisodeInfo.videoInfoList(): List<VideoInfo> {
+        val entries = when (val rawPlayers = players) {
+            is JsonArray -> rawPlayers.toList()
+            is JsonObject -> if ("player" in rawPlayers) {
+                listOf(rawPlayers)
+            } else {
+                rawPlayers.values.toList()
+            }
+            else -> emptyList()
         }
 
-        android.util.Log.d("Animelib", "fetchPreferredVideoServer: chosen=$chosen preference=$serverPreference servers=${videoServers.data.videoServers}")
-        return chosen
+        return entries.mapNotNull { item ->
+            try {
+                item.parseAs<VideoInfo>()
+            } catch (e: Exception) {
+                android.util.Log.w("Animelib", "Skipping an unrecognized player entry", e)
+                null
+            }
+        }
+    }
+
+    private fun JsonElement?.asString(): String? = when (this) {
+        is JsonPrimitive -> contentOrNull
+        else -> null
+    }
+
+    private fun JsonElement?.asInt(): Int? {
+        val value = when (this) {
+            is JsonObject -> get("id").asString()
+            else -> asString()
+        }
+        return value?.toIntOrNull()
+    }
+
+    private val VideoInfo.teamDisplayName: String
+        get() = (team as? JsonObject)?.get("name").asString()
+            ?: teamName
+            ?: team.asString()
+            ?: teamId.asString()
+            ?: "Animelib"
+
+    private val VideoInfo.translationTypeId: Int
+        get() {
+            val id = translationType.asInt()
+            if (id != null) return id
+            val label = ((translationType as? JsonObject)?.get("label") ?: translationType).asString().orEmpty()
+            return if (label.contains("субтит", ignoreCase = true) || label.contains("subtitle", ignoreCase = true)) {
+                1
+            } else {
+                0
+            }
+        }
+
+    private fun JsonElement?.findMediaUrl(): String? {
+        when (this) {
+            is JsonPrimitive -> {
+                val value = contentOrNull?.trim().orEmpty()
+                if (value.startsWith("http://") || value.startsWith("https://") ||
+                    value.startsWith("//") || value.startsWith("/") ||
+                    (
+                        value.isNotEmpty() && !value.any(Char::isWhitespace) &&
+                            ("/" in value || Regex("""\.(m3u8|mp4|webm)(?:[?#].*)?$""", RegexOption.IGNORE_CASE).containsMatchIn(value))
+                        )
+                ) {
+                    return value
+                }
+            }
+            is JsonArray -> for (item in this) {
+                item.findMediaUrl()?.let { return it }
+            }
+            is JsonObject -> {
+                for (key in listOf("href", "src", "url", "link", "stream", "hls", "file", "manifest", "m3u8", "path")) {
+                    this[key].findMediaUrl()?.let { return it }
+                }
+                for (value in values) {
+                    value.findMediaUrl()?.let { return it }
+                }
+            }
+            else -> Unit
+        }
+        return null
+    }
+
+    private fun VideoInfo.qualityItems(): List<JsonElement> {
+        val quality = (video as? JsonObject)?.get("quality") ?: return emptyList()
+        return when (quality) {
+            is JsonArray -> quality.toList()
+            is JsonObject -> if (listOf("href", "src", "url", "hls", "quality").any { it in quality }) {
+                listOf(quality)
+            } else {
+                quality.map { (label, value) ->
+                    JsonObject(mapOf("quality" to JsonPrimitive(label), "value" to value))
+                }
+            }
+            else -> emptyList()
+        }
+    }
+
+    private fun qualityValue(item: JsonElement): Int {
+        val raw = when (item) {
+            is JsonObject -> (item["quality"] ?: item["name"]).asString()
+            is JsonPrimitive -> item.contentOrNull
+            else -> null
+        }.orEmpty()
+        return Regex("\\d+").find(raw)?.value?.toIntOrNull() ?: 0
+    }
+
+    private fun normalizeStreamUrl(raw: String, serverUrl: String): String? {
+        val value = raw.trim()
+        if (value.isEmpty()) return null
+        if (value.startsWith("http://") || value.startsWith("https://") || value.startsWith("//")) {
+            return UrlUtils.fixUrl(value)
+        }
+        if (value.startsWith("/")) {
+            val origin = serverUrl.toHttpUrl()
+            return "${origin.scheme}://${origin.host}$value"
+        }
+        return "${serverUrl.trimEnd('/')}/${value.trimStart('/')}"
+    }
+
+    private fun playerHeaders(): Headers = Headers.Builder()
+        .add("Referer", "https://$domain/")
+        .add("User-Agent", headers["User-Agent"] ?: "Mozilla/5.0 (Android)")
+        .build()
+
+    private fun subtitleTracks(videoInfo: VideoInfo): List<Track> {
+        val subtitleEntries = when (val subtitles = videoInfo.subtitles) {
+            is JsonArray -> subtitles.toList()
+            is JsonObject -> subtitles.values.toList()
+            else -> emptyList()
+        }
+        return subtitleEntries.mapNotNull { subtitle ->
+            val url = subtitle.findMediaUrl() ?: return@mapNotNull null
+            val format = (subtitle as? JsonObject)?.get("format").asString().orEmpty()
+            Track(url, "${videoInfo.teamDisplayName} ($format)")
+        }
     }
 
     private suspend fun kodikVideoLinks(playerUrl: String?, teamName: String): List<Video> {
@@ -503,15 +729,7 @@ class Animelib :
     }
 
     private fun animelibVideoLinks(videoInfo: VideoInfo, serverUrl: String): List<Video> {
-        if (videoInfo.video == null) {
-            return emptyList()
-        }
-
-        val subtitles = videoInfo.subtitles?.map {
-            val url = it.src
-            val lang = "${videoInfo.team.name} (${it.format})"
-            Track(url, lang)
-        } ?: emptyList()
+        val subtitles = subtitleTracks(videoInfo)
 
         val useMaxQuality = preferences.getBoolean(
             PREF_USE_MAX_QUALITY_KEY,
@@ -520,31 +738,49 @@ class Animelib :
         val maxQuality = bestQuality(videoInfo)
         val qualityPreference = preferences.getStringSet(PREF_QUALITY_KEY, emptySet())
 
-        val videoList = videoInfo.video.quality.mapNotNull {
-            if (useMaxQuality && it.quality != maxQuality) {
+        val qualityItems = videoInfo.qualityItems()
+        val candidates = qualityItems.ifEmpty {
+            listOfNotNull(videoInfo.video)
+        }
+        val videoList = candidates.mapNotNull { item ->
+            val qualityValue = qualityValue(item)
+            if (useMaxQuality && maxQuality > 0 && qualityValue != maxQuality) {
                 return@mapNotNull null
-            } else if (!useMaxQuality && !qualityPreference.isNullOrEmpty()) {
-                if (!qualityPreference.contains(it.quality.toString())) {
+            } else if (!useMaxQuality && !qualityPreference.isNullOrEmpty() && qualityValue > 0) {
+                if (!qualityPreference.contains(qualityValue.toString())) {
                     return@mapNotNull null
                 }
             }
 
-            // Build absolute URL for the video; `href` may be absolute or relative
-            val href = it.href.trim()
-            val url = UrlUtils.fixUrl(href, serverUrl) ?: return@mapNotNull null
+            val videoData = item.findMediaUrl()
+                ?: videoInfo.video.findMediaUrl()
+                ?: videoInfo.src.findMediaUrl()
+                ?: videoInfo.href.findMediaUrl()
+                ?: videoInfo.url.findMediaUrl()
+                ?: videoInfo.hls.findMediaUrl()
+                ?: videoInfo.stream.findMediaUrl()
+                ?: return@mapNotNull null
+            val url = normalizeStreamUrl(videoData, serverUrl) ?: return@mapNotNull null
+            val quality = if (qualityValue > 0) " (${qualityValue}p)" else ""
 
-            val quality = "${videoInfo.team.name} (${it.quality}p Animelib)"
-
-            Video(url, quality, url, subtitleTracks = subtitles)
+            Video(
+                url,
+                "${videoInfo.teamDisplayName}$quality Animelib",
+                url,
+                headers = playerHeaders(),
+                subtitleTracks = subtitles,
+            )
         }
 
         return videoList
     }
 
-    private fun bestQuality(videoInfo: VideoInfo): Int = when (videoInfo.player.lowercase()) {
-        "animelib" -> videoInfo.video?.quality?.maxBy { it.quality }?.quality ?: 0
-        "kodik" -> 720
-        else -> 0
+    private fun bestQuality(videoInfo: VideoInfo): Int = if (videoInfo.player.equals("animelib", ignoreCase = true)) {
+        videoInfo.qualityItems().maxOfOrNull(::qualityValue) ?: 0
+    } else if (videoInfo.player.equals("kodik", ignoreCase = true)) {
+        720
+    } else {
+        0
     }
 
     // =============================== Converters ===============================
@@ -625,9 +861,11 @@ class Animelib :
     }
 
     private fun EpisodeInfo.toSEpisode() = SEpisode.create().apply {
-        setUrlWithoutDomain("api/episodes/$id")
-        name = "Сезон $season Серия $number $episodeName"
-        episode_number = number.toFloatOrNull() ?: 0f
-        date_upload = dateFormatter.tryParse(date)
+        val animeQuery = animeId.asString()?.let { "?anime_id=$it" }.orEmpty()
+        setUrlWithoutDomain("api/episodes/$id$animeQuery")
+        val episode = number.asString().orEmpty()
+        name = "Сезон ${season.asString().orEmpty()} Серия $episode ${episodeName.orEmpty()}".trim()
+        episode_number = episode.toFloatOrNull() ?: 0f
+        date_upload = dateFormatter.tryParse(date.orEmpty())
     }
 }
